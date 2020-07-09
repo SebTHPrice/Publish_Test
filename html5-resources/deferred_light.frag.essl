@@ -1,0 +1,191 @@
+#version 300 es
+precision mediump float;
+precision highp int;
+
+uniform highp samplerCubeShadow shadowMapPoint[1];
+uniform highp vec2 lightProj;
+uniform highp sampler2D gbuffer0;
+uniform highp sampler2D gbuffer1;
+uniform highp sampler2D gbufferD;
+uniform highp vec3 eye;
+uniform highp vec3 eyeLook;
+uniform highp vec2 cameraProj;
+uniform highp float envmapStrength;
+uniform highp sampler2D ssaotex;
+uniform highp vec3 pointPos;
+uniform highp vec3 pointCol;
+uniform highp float pointBias;
+uniform highp vec4 casData[20];
+
+in highp vec2 texCoord;
+in highp vec3 viewRay;
+out highp vec4 fragColor;
+
+highp vec2 octahedronWrap(highp vec2 v)
+{
+    return (vec2(1.0) - abs(v.yx)) * vec2((v.x >= 0.0) ? 1.0 : (-1.0), (v.y >= 0.0) ? 1.0 : (-1.0));
+}
+
+void unpackFloatInt16(highp float val, out highp float f, inout uint i)
+{
+    i = uint(int((val / 0.06250095367431640625) + 1.525902189314365386962890625e-05));
+    f = clamp((((-0.06250095367431640625) * float(i)) + val) / 0.06248569488525390625, 0.0, 1.0);
+}
+
+highp vec2 unpackFloat2(highp float f)
+{
+    return vec2(floor(f) / 255.0, fract(f));
+}
+
+highp vec3 surfaceAlbedo(highp vec3 baseColor, highp float metalness)
+{
+    return mix(baseColor, vec3(0.0), vec3(metalness));
+}
+
+highp vec3 surfaceF0(highp vec3 baseColor, highp float metalness)
+{
+    return mix(vec3(0.039999999105930328369140625), baseColor, vec3(metalness));
+}
+
+highp vec3 getPos(highp vec3 eye_1, highp vec3 eyeLook_1, highp vec3 viewRay_1, highp float depth, highp vec2 cameraProj_1)
+{
+    highp float linearDepth = cameraProj_1.y / (((depth * 0.5) + 0.5) - cameraProj_1.x);
+    highp float viewZDist = dot(eyeLook_1, viewRay_1);
+    highp vec3 wposition = eye_1 + (viewRay_1 * (linearDepth / viewZDist));
+    return wposition;
+}
+
+highp vec3 lambertDiffuseBRDF(highp vec3 albedo, highp float nl)
+{
+    return albedo * max(0.0, nl);
+}
+
+highp float d_ggx(highp float nh, highp float a)
+{
+    highp float a2 = a * a;
+    highp float denom = pow(((nh * nh) * (a2 - 1.0)) + 1.0, 2.0);
+    return (a2 * 0.3183098733425140380859375) / denom;
+}
+
+highp float v_smithschlick(highp float nl, highp float nv, highp float a)
+{
+    return 1.0 / (((nl * (1.0 - a)) + a) * ((nv * (1.0 - a)) + a));
+}
+
+highp vec3 f_schlick(highp vec3 f0, highp float vh)
+{
+    return f0 + ((vec3(1.0) - f0) * exp2((((-5.554729938507080078125) * vh) - 6.9831600189208984375) * vh));
+}
+
+highp vec3 specularBRDF(highp vec3 f0, highp float roughness, highp float nl, highp float nh, highp float nv, highp float vh)
+{
+    highp float a = roughness * roughness;
+    return (f_schlick(f0, vh) * (d_ggx(nh, a) * clamp(v_smithschlick(nl, nv, a), 0.0, 1.0))) / vec3(4.0);
+}
+
+highp float attenuate(highp float dist)
+{
+    return 1.0 / (dist * dist);
+}
+
+highp float lpToDepth(inout highp vec3 lp, highp vec2 lightProj_1)
+{
+    lp = abs(lp);
+    highp float zcomp = max(lp.x, max(lp.y, lp.z));
+    zcomp = lightProj_1.x - (lightProj_1.y / zcomp);
+    return (zcomp * 0.5) + 0.5;
+}
+
+highp float PCFCube(highp samplerCubeShadow shadowMapCube, highp vec3 lp, inout highp vec3 ml, highp float bias, highp vec2 lightProj_1, highp vec3 n)
+{
+    highp vec3 param = lp;
+    highp float _267 = lpToDepth(param, lightProj_1);
+    highp float compare = _267 - (bias * 1.5);
+    ml += ((n * bias) * 20.0);
+    highp vec4 _284 = vec4(ml, compare);
+    highp float result = texture(shadowMapCube, vec4(_284.xyz, _284.w));
+    highp vec4 _296 = vec4(ml + vec3(0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_296.xyz, _296.w));
+    highp vec4 _310 = vec4(ml + vec3(-0.001000000047497451305389404296875, 0.001000000047497451305389404296875, 0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_310.xyz, _310.w));
+    highp vec4 _323 = vec4(ml + vec3(0.001000000047497451305389404296875, -0.001000000047497451305389404296875, 0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_323.xyz, _323.w));
+    highp vec4 _336 = vec4(ml + vec3(0.001000000047497451305389404296875, 0.001000000047497451305389404296875, -0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_336.xyz, _336.w));
+    highp vec4 _349 = vec4(ml + vec3(-0.001000000047497451305389404296875, -0.001000000047497451305389404296875, 0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_349.xyz, _349.w));
+    highp vec4 _362 = vec4(ml + vec3(0.001000000047497451305389404296875, -0.001000000047497451305389404296875, -0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_362.xyz, _362.w));
+    highp vec4 _375 = vec4(ml + vec3(-0.001000000047497451305389404296875, 0.001000000047497451305389404296875, -0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_375.xyz, _375.w));
+    highp vec4 _388 = vec4(ml + vec3(-0.001000000047497451305389404296875), compare);
+    result += texture(shadowMapCube, vec4(_388.xyz, _388.w));
+    return result / 9.0;
+}
+
+highp vec3 sampleLight(highp vec3 p, highp vec3 n, highp vec3 v, highp float dotNV, highp vec3 lp, highp vec3 lightCol, highp vec3 albedo, highp float rough, highp float spec, highp vec3 f0, int index, highp float bias)
+{
+    highp vec3 ld = lp - p;
+    highp vec3 l = normalize(ld);
+    highp vec3 h = normalize(v + l);
+    highp float dotNH = dot(n, h);
+    highp float dotVH = dot(v, h);
+    highp float dotNL = dot(n, l);
+    highp vec3 direct = lambertDiffuseBRDF(albedo, dotNL) + (specularBRDF(f0, rough, dotNL, dotNH, dotNV, dotVH) * spec);
+    direct *= attenuate(distance(p, lp));
+    direct *= lightCol;
+    highp vec3 param = -l;
+    highp float _444 = PCFCube(shadowMapPoint[0], ld, param, bias, lightProj, n);
+    direct *= _444;
+    return direct;
+}
+
+void main()
+{
+    highp vec4 g0 = textureLod(gbuffer0, texCoord, 0.0);
+    highp vec3 n;
+    n.z = (1.0 - abs(g0.x)) - abs(g0.y);
+    highp vec2 _475;
+    if (n.z >= 0.0)
+    {
+        _475 = g0.xy;
+    }
+    else
+    {
+        _475 = octahedronWrap(g0.xy);
+    }
+    n = vec3(_475.x, _475.y, n.z);
+    n = normalize(n);
+    highp float roughness = g0.z;
+    highp float param;
+    uint param_1;
+    unpackFloatInt16(g0.w, param, param_1);
+    highp float metallic = param;
+    uint matid = param_1;
+    highp vec4 g1 = textureLod(gbuffer1, texCoord, 0.0);
+    highp vec2 occspec = unpackFloat2(g1.w);
+    highp vec3 albedo = surfaceAlbedo(g1.xyz, metallic);
+    highp vec3 f0 = surfaceF0(g1.xyz, metallic);
+    highp float depth = (textureLod(gbufferD, texCoord, 0.0).x * 2.0) - 1.0;
+    highp vec3 p = getPos(eye, eyeLook, normalize(viewRay), depth, cameraProj);
+    highp vec3 v = normalize(eye - p);
+    highp float dotNV = max(dot(n, v), 0.0);
+    highp vec3 envl = vec3(1.0);
+    envl *= albedo;
+    envl *= (envmapStrength * occspec.x);
+    fragColor = vec4(envl.x, envl.y, envl.z, fragColor.w);
+    highp vec3 _578 = fragColor.xyz * textureLod(ssaotex, texCoord, 0.0).x;
+    fragColor = vec4(_578.x, _578.y, _578.z, fragColor.w);
+    if (g0.w == 1.0)
+    {
+        highp vec3 _590 = fragColor.xyz + g1.xyz;
+        fragColor = vec4(_590.x, _590.y, _590.z, fragColor.w);
+        albedo = vec3(0.0);
+    }
+    int param_2 = 0;
+    highp float param_3 = pointBias;
+    highp vec3 _613 = fragColor.xyz + sampleLight(p, n, v, dotNV, pointPos, pointCol, albedo, roughness, occspec.y, f0, param_2, param_3);
+    fragColor = vec4(_613.x, _613.y, _613.z, fragColor.w);
+    fragColor.w = 1.0;
+}
+
